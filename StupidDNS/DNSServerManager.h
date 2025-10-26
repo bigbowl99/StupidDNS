@@ -42,6 +42,11 @@ public:
     const std::vector<DNSServerInfo>& GetOverseasServers() const {
   return m_overseasServers;
     }
+
+ // 设置IP污染过滤器
+ void SetPoisonIPFilter(std::function<bool(const CString&)> filter) {
+ m_tester.SetPoisonFilter(filter);
+ }
     
 private:
     std::vector<DNSServerInfo> m_domesticServers;   // 国内DNS列表

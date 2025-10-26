@@ -75,6 +75,18 @@
     <ClInclude Include="SystemDNSHelper.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="DNSConfigCache.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="PollutedIPLoader.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="DNSDualQuery.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="DNSCacheHelper.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="StupidDNS.cpp">
@@ -120,6 +132,18 @@
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="SystemDNSHelper.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="DNSConfigCache.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="PollutedIPLoader.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="DNSDualQuery.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="DNSCacheHelper.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
   </ItemGroup>

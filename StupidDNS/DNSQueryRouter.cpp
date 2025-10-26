@@ -11,8 +11,12 @@
 
 // 构造函数
 CDNSQueryRouter::CDNSQueryRouter()
- : m_pServerManager(nullptr)
- , m_pClassifier(nullptr)
+    : m_pServerManager(nullptr)
+    , m_pClassifier(nullptr)
+  , m_nDomesticQueries(0)
+ , m_nOverseasQueries(0)
+    , m_nDualQueries(0)
+  , m_nPollutionDetected(0)
 {
 }
 
@@ -23,16 +27,22 @@ CDNSQueryRouter::~CDNSQueryRouter()
 
 // 初始化
 BOOL CDNSQueryRouter::Initialize(CDNSServerManager* pServerManager,
- CDomainClassifier* pClassifier)
+    CDomainClassifier* pClassifier)
 {
  m_pServerManager = pServerManager;
- m_pClassifier = pClassifier;
+    m_pClassifier = pClassifier;
+    
+  if (!m_pServerManager || !m_pClassifier) {
+        return FALSE;
+    }
  
- if (!m_pServerManager || !m_pClassifier) {
- return FALSE;
+    // 初始化双向查询器
+    if (!m_dualQuery.Initialize()) {
+        TRACE(_T("[路由器] 警告：双向查询器初始化失败，污染检测功能受限\n"));
+        // 不返回FALSE，允许继续运行
  }
- 
- return TRUE;
+    
+    return TRUE;
 }
 
 // 检查是否是内网IP
@@ -261,103 +271,154 @@ CString CDNSQueryRouter::DoQuery(const CString& dnsServer, const CString& domain
  return ip;
 }
 
+// 获取DNS服务器列表
+std::vector<CString> CDNSQueryRouter::GetDomesticDNSList()
+{
+    std::vector<CString> list;
+    DNSServerInfo domestic = m_pServerManager->GetFastestDomesticDNS();
+    if (!domestic.ip.IsEmpty()) {
+  list.push_back(domestic.ip);
+    }
+    return list;
+}
+
+std::vector<CString> CDNSQueryRouter::GetOverseasDNSList()
+{
+ std::vector<CString> list;
+    auto overseas = m_pServerManager->GetFastestOverseasDNS(5);
+    for (const auto& dns : overseas) {
+ if (!dns.ip.IsEmpty()) {
+            list.push_back(dns.ip);
+        }
+    }
+    return list;
+}
+
 // 查询国内DNS
 CString CDNSQueryRouter::QueryDomesticDNS(const CString& domain, int& latency)
 {
- DNSServerInfo domesticDNS = m_pServerManager->GetFastestDomesticDNS();
- 
- if (domesticDNS.ip.IsEmpty()) {
- TRACE(_T("[路由] 没有可用的国内DNS\n"));
- return _T("");
+    m_nDomesticQueries++;
+  
+    DNSServerInfo domesticDNS = m_pServerManager->GetFastestDomesticDNS();
+    
+    if (domesticDNS.ip.IsEmpty()) {
+     TRACE(_T("[路由] 没有可用的国内DNS\n"));
+        return _T("");
+    }
+    
+    TRACE(_T("[路由] 查询国内DNS: %s (%s)\n"), domesticDNS.name, domesticDNS.ip);
+    
+    CString result = DoQuery(domesticDNS.ip, domain, latency);
+    
+   if (!result.IsEmpty()) {
+     TRACE(_T("[路由] %s -> 国内DNS返回: %s (%dms)\n"), 
+          domain, result, latency);
  }
- 
- TRACE(_T("[路由] 查询国内DNS: %s (%s)\n"), domesticDNS.name, domesticDNS.ip);
- 
- CString result = DoQuery(domesticDNS.ip, domain, latency);
- 
- if (!result.IsEmpty()) {
- TRACE(_T("[路由] %s -> 国内DNS结果: %s (%dms)\n"), 
- domain, result, latency);
- }
- 
- return result;
+    
+  return result;
 }
 
 // 查询海外DNS
 CString CDNSQueryRouter::QueryOverseasDNS(const CString& domain, int& latency)
 {
- auto overseasDNS = m_pServerManager->GetFastestOverseasDNS(1);
+    m_nOverseasQueries++;
  
- if (overseasDNS.empty() || overseasDNS[0].ip.IsEmpty()) {
- TRACE(_T("[路由] 没有可用的海外DNS\n"));
- return _T("");
- }
- 
- TRACE(_T("[路由] 查询海外DNS: %s (%s)\n"), 
- overseasDNS[0].name, overseasDNS[0].ip);
- 
- CString result = DoQuery(overseasDNS[0].ip, domain, latency);
- 
+auto overseasDNS = m_pServerManager->GetFastestOverseasDNS(1);
+    
+    if (overseasDNS.empty() || overseasDNS[0].ip.IsEmpty()) {
+     TRACE(_T("[路由] 没有可用的海外DNS\n"));
+        return _T("");
+    }
+    
+    TRACE(_T("[路由] 查询海外DNS: %s (%s)\n"), 
+        overseasDNS[0].name, overseasDNS[0].ip);
+    
+    CString result = DoQuery(overseasDNS[0].ip, domain, latency);
+    
  if (!result.IsEmpty()) {
- TRACE(_T("[路由] %s -> 海外DNS结果: %s (%dms)\n"), 
+        TRACE(_T("[路由] %s -> 海外DNS返回: %s (%dms)\n"), 
  domain, result, latency);
- }
- 
- return result;
+}
+    
+    return result;
 }
 
-// 双向查询并验证
+// 双向查询并验证（使用新的CDNSDualQuery类）
 CString CDNSQueryRouter::QueryBothAndValidate(const CString& domain, int& latency)
 {
- TRACE(_T("[路由] 未知域名，开始双向查询: %s\n"), domain);
- 
- // 同时向国内DNS和海外DNS查询（并发）
- int domesticLatency =0;
- int overseasLatency =0;
- 
- auto domesticFuture = std::async(std::launch::async, [&]() {
- return QueryDomesticDNS(domain, domesticLatency);
- });
- 
- auto overseasFuture = std::async(std::launch::async, [&]() {
- return QueryOverseasDNS(domain, overseasLatency);
- });
- 
- // 等待结果
- CString domesticIP = domesticFuture.get();
- CString overseasIP = overseasFuture.get();
- 
- // 优先使用国内结果（速度快）
- if (!domesticIP.IsEmpty()) {
- // 验证是否污染
- if (ValidateResult(domesticIP)) {
-// 未污染，使用国内结果
- latency = domesticLatency;
- TRACE(_T("[路由] 使用国内DNS结果: %s (%dms)\n"), 
- domesticIP, latency);
- return domesticIP;
- } else {
- TRACE(_T("[路由] 国内DNS结果被污染: %s\n"), domesticIP);
- }
- }
- 
- // 国内结果污染或失败，使用海外结果
- if (!overseasIP.IsEmpty()) {
- latency = overseasLatency;
- TRACE(_T("[路由] 使用海外DNS结果: %s (%dms)\n"), 
- overseasIP, latency);
- 
- // 学习：标记该域名为海外域名
- // 下次直接走海外DNS
- // TODO: 实现学习机制
- 
- return overseasIP;
- }
- 
- // 都失败
- TRACE(_T("[路由] 双向查询都失败: %s\n"), domain);
- latency = -1;
- return _T("");
+    TRACE(_T("[路由器] 未知域名，开始双向查询: %s\n"), domain);
+    m_nDualQueries++;
+    
+    // 获取DNS服务器列表
+    std::vector<CString> domesticDNS = GetDomesticDNSList();
+    std::vector<CString> overseasDNS = GetOverseasDNSList();
+    
+ if (domesticDNS.empty() && overseasDNS.empty()) {
+        TRACE(_T("[路由器] 错误：没有可用的DNS服务器\n"));
+        latency = -1;
+  return _T("");
+    }
+    
+    // 执行双向查询
+    DNSQueryResult domesticResult, overseasResult;
+    BOOL success = m_dualQuery.PerformDualQuery(
+   domain,
+  domesticDNS,
+overseasDNS,
+ domesticResult,
+     overseasResult
+    );
+    
+ if (!success) {
+TRACE(_T("[路由器] 双向查询失败: %s\n"), domain);
+        latency = -1;
+   return _T("");
+    }
+    
+    // 污染检测
+    PollutionStatus pollution = m_dualQuery.DetectPollution(
+  domesticResult,
+        overseasResult
+    );
+    
+    // 记录污染检测结果
+    if (pollution == POLLUTION_DETECTED) {
+        m_nPollutionDetected++;
+        TRACE(_T("[路由器] 检测到污染: %s -> 国内返回 %s，使用海外结果\n"),
+     domain, domesticResult.ip);
+    } else if (pollution == POLLUTION_CLEAN) {
+    TRACE(_T("[路由器] 结果干净: %s -> 国内: %s, 海外: %s\n"),
+    domain, domesticResult.ip, overseasResult.ip);
+    } else {
+    TRACE(_T("[路由器] 不确定: %s -> 国内: %s, 海外: %s\n"),
+   domain, domesticResult.ip, overseasResult.ip);
+    }
+    
+    // 选择最佳结果
+    DNSQueryResult bestResult = m_dualQuery.SelectBestResult(
+  domesticResult,
+   overseasResult,
+    pollution
+    );
+    
+    if (!bestResult.success) {
+     TRACE(_T("[路由器] 无法选择有效结果: %s\n"), domain);
+  latency = -1;
+  return _T("");
+    }
+    
+    latency = bestResult.latency;
+    TRACE(_T("[路由器] 最终选择: %s -> %s (%dms) from %s\n"),
+   domain, bestResult.ip, latency, bestResult.dnsServer);
+    
+    // TODO: 学习规则 - 根据污染检测结果更新域名分类
+  // if (pollution == POLLUTION_DETECTED) {
+  //     // 标记为海外域名
+    // } else if (pollution == POLLUTION_CLEAN && bestResult.dnsServer == domesticResult.dnsServer) {
+    //     // 标记为国内域名
+    // }
+  
+    return bestResult.ip;
 }
 
 // 路由查询（核心函数）

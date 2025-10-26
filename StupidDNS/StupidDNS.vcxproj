@@ -187,6 +187,9 @@
     <ClInclude Include="AboutDlg.h" />
     <ClInclude Include="AdvancedDlg.h" />
     <ClInclude Include="AssociatedDomainDetector.h" />
+    <ClInclude Include="DNSCacheHelper.h" />
+    <ClInclude Include="DNSConfigCache.h" />
+    <ClInclude Include="DNSDualQuery.h" />
     <ClInclude Include="DNSFetcher.h" />
     <ClInclude Include="DNSQueryRouter.h" />
     <ClInclude Include="DNSServer.h" />
@@ -198,6 +201,7 @@
     <ClInclude Include="DomainRuleLoader.h" />
     <ClInclude Include="framework.h" />
     <ClInclude Include="pch.h" />
+    <ClInclude Include="PollutedIPLoader.h" />
     <ClInclude Include="Resource.h" />
     <ClInclude Include="StupidDNS.h" />
     <ClInclude Include="StupidDNSDlg.h" />
@@ -208,6 +212,9 @@
     <ClCompile Include="AboutDlg.cpp" />
     <ClCompile Include="AdvancedDlg.cpp" />
     <ClCompile Include="AssociatedDomainDetector.cpp" />
+    <ClCompile Include="DNSCacheHelper.cpp" />
+    <ClCompile Include="DNSConfigCache.cpp" />
+    <ClCompile Include="DNSDualQuery.cpp" />
     <ClCompile Include="DNSFetcher.cpp" />
     <ClCompile Include="DNSQueryRouter.cpp" />
     <ClCompile Include="DNSServerCore.cpp" />
@@ -222,6 +229,7 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="PollutedIPLoader.cpp" />
     <ClCompile Include="StupidDNS.cpp" />
     <ClCompile Include="StupidDNSDlg.cpp" />
     <ClCompile Include="SystemDNSHelper.cpp" />

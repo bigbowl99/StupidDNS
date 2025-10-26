@@ -68,6 +68,7 @@ public:
 	afx_msg void OnBnClickedAbout();    // 关于按钮
 	afx_msg void OnTimer(UINT_PTR nIDEvent);  // 定时器消息
 	afx_msg LRESULT OnDNSLogMessage(WPARAM wParam, LPARAM lParam);  // DNS日志消息
+	afx_msg LRESULT OnUpdateDNSButtonText(WPARAM wParam, LPARAM lParam);  // 更新DNS按钮文本消息
 	afx_msg void OnBnClickedSetSystemDns(); // 设置系统DNS按钮
 
 	// 辅助函数（public，供回调使用）

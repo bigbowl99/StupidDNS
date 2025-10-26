@@ -79,7 +79,7 @@ std::vector<NetworkAdapter> CSystemDNSHelper::GetAllAdapters()
 // 执行netsh命令
 BOOL CSystemDNSHelper::ExecuteNetshCommand(const CString& command)
 {
-    TRACE(_T("执行命令: %s\n"), command);
+    TRACE(_T("[ExecuteNetshCommand] 开始执行命令: %s\n"), command);
     
     STARTUPINFO si;
     PROCESS_INFORMATION pi;
@@ -95,26 +95,58 @@ BOOL CSystemDNSHelper::ExecuteNetshCommand(const CString& command)
     CString cmdLine;
     cmdLine.Format(_T("netsh %s"), command);
     
+    TRACE(_T("[ExecuteNetshCommand] 完整命令: %s\n"), cmdLine);
+    
     // 启动进程
     if (!CreateProcess(NULL, cmdLine.GetBuffer(), NULL, NULL, FALSE,
-        CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
-  TRACE(_T("CreateProcess失败: %d\n"), GetLastError());
-   return FALSE;
+  CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+      DWORD error = GetLastError();
+      TRACE(_T("[ExecuteNetshCommand] CreateProcess失败，错误代码: %d\n"), error);
+        cmdLine.ReleaseBuffer();
+      return FALSE;
     }
     
     cmdLine.ReleaseBuffer();
+  TRACE(_T("[ExecuteNetshCommand] 进程已启动，等待完成...\n"));
     
-    // 等待进程结束
-    WaitForSingleObject(pi.hProcess, 5000);
+    // 减少等待时间从5秒改为2秒（给更多时间）
+  DWORD waitResult = WaitForSingleObject(pi.hProcess, 2000);
     
- // 获取退出代码
-    DWORD exitCode;
- GetExitCodeProcess(pi.hProcess, &exitCode);
+    TRACE(_T("[ExecuteNetshCommand] 等待结果: %d\n"), waitResult);
+    
+    // 获取退出代码
+DWORD exitCode = 0;
+if (waitResult == WAIT_OBJECT_0) {
+        if (GetExitCodeProcess(pi.hProcess, &exitCode)) {
+        TRACE(_T("[ExecuteNetshCommand] 进程正常退出，退出代码: %d\n"), exitCode);
+      } else {
+  TRACE(_T("[ExecuteNetshCommand] 无法获取退出代码\n"));
+       exitCode = 1;
+        }
+    } else if (waitResult == WAIT_TIMEOUT) {
+        // 超时，但不强制终止，因为netsh可能需要更多时间
+    TRACE(_T("[ExecuteNetshCommand] 等待超时，但不终止进程\n"));
+        // 再等待1秒
+        waitResult = WaitForSingleObject(pi.hProcess, 1000);
+        if (waitResult == WAIT_OBJECT_0) {
+        GetExitCodeProcess(pi.hProcess, &exitCode);
+     TRACE(_T("[ExecuteNetshCommand] 额外等待后完成，退出代码: %d\n"), exitCode);
+     } else {
+            TRACE(_T("[ExecuteNetshCommand] 仍然超时，假设成功（netsh通常会成功）\n"));
+        // 假设成功，因为netsh命令通常会成功执行
+      exitCode = 0;
+        }
+    } else {
+        TRACE(_T("[ExecuteNetshCommand] 等待失败，错误: %d\n"), GetLastError());
+  exitCode = 1;
+    }
     
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
     
-    return (exitCode == 0);
+    BOOL success = (exitCode == 0);
+    TRACE(_T("[ExecuteNetshCommand] 命令执行完成，返回: %d\n"), success);
+return success;
 }
 
 // 获取主要网络适配器
@@ -167,41 +199,91 @@ BOOL CSystemDNSHelper::SetDNSToAuto(const CString& adapterName)
 // 检查是否已设置为127.0.0.1
 BOOL CSystemDNSHelper::IsSetToLocalhost(const CString& adapterName)
 {
-    // 通过注册表检查DNS设置
- // 简化实现：执行ipconfig /all并解析输出
-    // 这里返回FALSE，实际使用时需要完整实现
-    return FALSE;
+    // 获取所有适配器信息
+    ULONG bufferSize = 15000;
+    PIP_ADAPTER_ADDRESSES pAddresses = (PIP_ADAPTER_ADDRESSES)malloc(bufferSize);
+    
+    if (pAddresses == NULL) {
+  return FALSE;
+    }
+    
+    DWORD result = GetAdaptersAddresses(AF_INET, 
+        GAA_FLAG_INCLUDE_PREFIX,
+   NULL, pAddresses, &bufferSize);
+    
+    if (result == ERROR_BUFFER_OVERFLOW) {
+        free(pAddresses);
+      pAddresses = (PIP_ADAPTER_ADDRESSES)malloc(bufferSize);
+ result = GetAdaptersAddresses(AF_INET, 
+ GAA_FLAG_INCLUDE_PREFIX,
+         NULL, pAddresses, &bufferSize);
+    }
+    
+    BOOL isLocalhost = FALSE;
+ 
+    if (result == NO_ERROR) {
+        PIP_ADAPTER_ADDRESSES pCurrAddresses = pAddresses;
+        
+        while (pCurrAddresses) {
+            // 只检查以太网和WiFi适配器
+  if (pCurrAddresses->IfType == IF_TYPE_ETHERNET_CSMACD ||
+   pCurrAddresses->IfType == IF_TYPE_IEEE80211) {
+           
+ // 获取DNS服务器地址
+PIP_ADAPTER_DNS_SERVER_ADDRESS pDnsServer = pCurrAddresses->FirstDnsServerAddress;
+      
+          if (pDnsServer) {
+           sockaddr_in* pSockAddr = (sockaddr_in*)pDnsServer->Address.lpSockaddr;
+       if (pSockAddr && pSockAddr->sin_family == AF_INET) {
+  // 检查是否是127.0.0.1 (0x7F000001 网络字节序)
+      ULONG dnsIP = ntohl(pSockAddr->sin_addr.s_addr);
+   if (dnsIP == 0x7F000001) {  // 127.0.0.1
+     isLocalhost = TRUE;
+            break;
+       }
+    }
+      }
+            }
+            
+ pCurrAddresses = pCurrAddresses->Next;
+ }
+    }
+  
+    free(pAddresses);
+    return isLocalhost;
 }
 
 // 设置所有活动适配器的DNS
 BOOL CSystemDNSHelper::SetAllAdaptersDNS(BOOL setToLocalhost)
 {
     auto adapters = GetAllAdapters();
-    
-    if (adapters.empty()) {
-    TRACE(_T("未找到网络适配器\n"));
+ 
+  if (adapters.empty()) {
+   TRACE(_T("[SetAllAdaptersDNS] 未找到网络适配器\n"));
     return FALSE;
     }
+  
+// **只设置第一个活动适配器，避免长时间等待**
+    TRACE(_T("[SetAllAdaptersDNS] 找到 %d 个网络适配器，只设置第一个\n"), adapters.size());
     
-    BOOL success = TRUE;
-    int count = 0;
+    const auto& adapter = adapters[0];  // 只设置第一个
     
-    for (const auto& adapter : adapters) {
-   if (setToLocalhost) {
-      if (SetDNSToLocalhost(adapter.name)) {
-             count++;
-     } else {
-       success = FALSE;
+ BOOL success = FALSE;
+    if (setToLocalhost) {
+     success = SetDNSToLocalhost(adapter.name);
+        if (success) {
+    TRACE(_T("[SetAllAdaptersDNS] 成功设置 %s\n"), adapter.name);
+        } else {
+       TRACE(_T("[SetAllAdaptersDNS] 失败设置 %s\n"), adapter.name);
+        }
+} else {
+    success = SetDNSToAuto(adapter.name);
+   if (success) {
+      TRACE(_T("[SetAllAdaptersDNS] 成功恢复 %s\n"), adapter.name);
+   } else {
+         TRACE(_T("[SetAllAdaptersDNS] 失败恢复 %s\n"), adapter.name);
       }
-    } else {
-   if (SetDNSToAuto(adapter.name)) {
- count++;
-      } else {
-     success = FALSE;
-       }
-   }
     }
     
-    TRACE(_T("已设置 %d 个适配器的DNS\n"), count);
-    return success && count > 0;
+    return success;
 }

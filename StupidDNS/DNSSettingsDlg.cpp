@@ -73,44 +73,104 @@ void CDNSSettingsDlg::InitDNSList()
 // 加载默认DNS服务器
 void CDNSSettingsDlg::LoadDefaultDNS()
 {
-    // 预置亚洲DNS服务器列表
+    // 预置DNS服务器列表
     struct DNSServer {
         LPCTSTR name;
         LPCTSTR ip;
+     LPCTSTR region;  // 区域标识
     } defaultServers[] = {
-        // 香港DNS
-        { _T("香港HKNet"), _T("202.45.84.58") },
-        { _T("香港PCCW"), _T("203.80.96.10") },
- 
-   // 台湾DNS
-        { _T("台湾HiNet"), _T("168.95.1.1") },
-  { _T("台湾SeedNet"), _T("139.175.10.20") },
- 
-        // 日本DNS
-        { _T("日本OpenDNS"), _T("210.141.113.7") },
-   { _T("日本OCN"), _T("61.112.144.2") },
-  
-        // 新加坡DNS
-      { _T("新加坡SingNet"), _T("165.21.83.88") },
- { _T("新加坡StarHub"), _T("202.156.160.2") },
+        // === 国内DNS (用于中国域名解析) ===
+        { _T("阿里DNS主"), _T("223.5.5.5"), _T("CN") },
+{ _T("阿里DNS备"), _T("223.6.6.6"), _T("CN") },
+        { _T("腾讯DNS主"), _T("119.29.29.29"), _T("CN") },
+        { _T("腾讯DNS备"), _T("182.254.116.116"), _T("CN") },
+   { _T("114DNS主"), _T("114.114.114.114"), _T("CN") },
+   { _T("114DNS备"), _T("114.114.115.115"), _T("CN") },
+
+        // === 亚洲DNS (海外解析，延迟较低) ===
+   // 香港
+  { _T("香港HKNet"), _T("202.45.84.58"), _T("HK") },
+ { _T("香港PCCW"), _T("203.80.96.10"), _T("HK") },
         
-        // 韩国DNS
-    { _T("韩国KT"), _T("168.126.63.1") },
-        { _T("韩国SK"), _T("210.220.163.82") },
+        // 台湾
+        { _T("台湾HiNet"), _T("168.95.1.1"), _T("TW") },
+ { _T("台湾SeedNet"), _T("139.175.10.20"), _T("TW") },
+        { _T("台湾APOL"), _T("203.141.131.66"), _T("TW") },
+        { _T("台湾HiNet2"), _T("124.209.159.91"), _T("TW") },
+        
+// 日本
+    { _T("日本OpenDNS"), _T("210.141.113.7"), _T("JP") },
+        { _T("日本OCN"), _T("61.112.144.2"), _T("JP") },
+        { _T("日本KDDI"), _T("14.52.42.133"), _T("JP") },
+        { _T("日本DTI"), _T("210.94.0.7"), _T("JP") },
+ 
+   // 韩国
+    { _T("韩国KT"), _T("168.126.63.1"), _T("KR") },
+        { _T("韩国SK"), _T("210.220.163.82"), _T("KR") },
+      { _T("韩国LG"), _T("42.3.117.64"), _T("KR") },
+        { _T("韩国BORANET"), _T("223.255.177.202"), _T("KR") },
+        
+        // 新加坡
+        { _T("新加坡SingNet"), _T("165.21.83.88"), _T("SG") },
+        { _T("新加坡StarHub"), _T("202.156.160.2"), _T("SG") },
+        { _T("新加坡M1"), _T("202.188.0.133"), _T("SG") },
+        
+        // 印度
+  { _T("印度BSNL"), _T("58.185.92.216"), _T("IN") },
+      { _T("印度Tata"), _T("111.223.91.163"), _T("IN") },
+    
+        // 泰国
+        { _T("泰国TOT"), _T("49.236.193.35"), _T("TH") },
+      { _T("泰国True"), _T("103.237.126.4"), _T("TH") },
+        
+        // 菲律宾
+        { _T("菲律宾PLDT"), _T("122.100.153.3"), _T("PH") },
+        
+        // === 国际DNS (全球可靠DNS) ===
+  // Google
+        { _T("Google DNS主"), _T("8.8.8.8"), _T("US") },
+        { _T("Google DNS备"), _T("8.8.4.4"), _T("US") },
+        
+ // Cloudflare
+        { _T("Cloudflare主"), _T("1.1.1.1"), _T("US") },
+      { _T("Cloudflare备"), _T("1.0.0.1"), _T("US") },
       
-  // 国际DNS
-        { _T("Google DNS"), _T("8.8.8.8") },
-        { _T("Cloudflare"), _T("1.1.1.1") },
-        { _T("OpenDNS"), _T("208.67.222.222") },
+        // Quad9
+        { _T("Quad9主"), _T("9.9.9.9"), _T("US") },
+        { _T("Quad9备"), _T("149.112.112.112"), _T("US") },
+  
+        // OpenDNS
+        { _T("OpenDNS主"), _T("208.67.222.222"), _T("US") },
+        { _T("OpenDNS备"), _T("208.67.220.220"), _T("US") },
+        
+   // AdGuard DNS
+        { _T("AdGuard主"), _T("94.140.14.14"), _T("EU") },
+  { _T("AdGuard备"), _T("94.140.15.15"), _T("EU") },
+        
+        // CleanBrowsing
+  { _T("CleanBrowsing主"), _T("185.228.168.9"), _T("EU") },
+        { _T("CleanBrowsing备"), _T("185.228.169.9"), _T("EU") },
+     
+        // Verisign
+        { _T("Verisign主"), _T("64.6.64.6"), _T("US") },
+        { _T("Verisign备"), _T("64.6.65.6"), _T("US") },
+        
+        // Comodo Secure DNS
+      { _T("Comodo主"), _T("8.26.56.26"), _T("US") },
+        { _T("Comodo备"), _T("8.20.247.20"), _T("US") },
+  
+        // Level3
+        { _T("Level3主"), _T("76.76.2.0"), _T("US") },
+    { _T("Level3备"), _T("76.76.10.0"), _T("US") },
     };
 
     // 添加到列表
-    for (int i = 0; i < _countof(defaultServers); i++)
+ for (int i = 0; i < _countof(defaultServers); i++)
     {
   int index = m_listDNS.InsertItem(i, defaultServers[i].name);
-        m_listDNS.SetItemText(index, 1, defaultServers[i].ip);
-    m_listDNS.SetItemText(index, 2, _T("-"));
-     m_listDNS.SetItemText(index, 3, _T("未测试"));
+  m_listDNS.SetItemText(index, 1, defaultServers[i].ip);
+        m_listDNS.SetItemText(index, 2, _T("-"));
+        m_listDNS.SetItemText(index, 3, _T("未测试"));
     }
 }
 

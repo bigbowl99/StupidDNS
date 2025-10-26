@@ -121,28 +121,67 @@ buffer[4] = 0x00;
     return pos;
 }
 
-// 解析DNS响应包
-BOOL CDNSSpeedTester::ParseDNSResponse(const char* response, int length)
+//解析DNS响应，提取一个A记录IP（若有）并判断是否有效
+BOOL CDNSSpeedTester::ParseDNSResponse(const char* response, int length, CString& outARecordIP)
 {
-    // 简单验证：检查是否是响应包
-    if (length < 12)
-        return FALSE;
-    
-    // 检查Flags中的QR位（应该是1，表示响应）
-    if (((unsigned char)response[2] & 0x80) == 0)
-      return FALSE;
-    
-    // 检查RCODE（响应码，0表示无错误）
+    // 最基本校验
+    if (length < 12) return FALSE;
+    if (((unsigned char)response[2] & 0x80) == 0) return FALSE; // 必须为响应
     int rcode = (unsigned char)response[3] & 0x0F;
-  if (rcode != 0)
-        return FALSE;
+    if (rcode != 0) return FALSE; //只接受无错误
+    int qdcount = (((unsigned char)response[4]) << 8) | (unsigned char)response[5];
+    int ancount = (((unsigned char)response[6]) << 8) | (unsigned char)response[7];
+    if (ancount == 0) return FALSE;
     
-    // 检查是否有回答（避免有符号扩展）
-    int answerCount = (((unsigned char)response[6]) << 8) | (unsigned char)response[7];
-    if (answerCount == 0)
-        return FALSE;
+    // 跳过 Question
+    int pos = 12;
+    for (int qi = 0; qi < qdcount; ++qi) {
+        // 跳过 QNAME
+        while (pos < length && (unsigned char)response[pos] != 0) {
+            unsigned char l = (unsigned char)response[pos];
+            if (l & 0xC0) { // 压缩指针
+                if (pos + 1 >= length) return FALSE;
+                pos += 2; break;
+            }
+            pos += 1 + l;
+        }
+        if (pos >= length) return FALSE;
+        pos++; // 跳过结尾0
+        // 跳过 QTYPE QCLASS
+        pos += 4;
+        if (pos > length) return FALSE;
+    }
     
-    return TRUE;
+    //解析 Answer，找第一个 TYPE=A 的 RDATA 4字节
+    for (int ai = 0; ai < ancount; ++ai) {
+        if (pos + 10 > length) return FALSE; // 至少需要 NAME(2)指针 + TYPE(2)+CLASS(2)+TTL(4)
+        // 跳过 NAME（指针或域名/压缩）
+        if ((response[pos] & 0xC0) == 0xC0) {
+            pos += 2; // 压缩指针
+        } else {
+            //罕见：未压缩
+            while (pos < length && (unsigned char)response[pos] != 0) {
+                unsigned char l = (unsigned char)response[pos];
+                pos += 1 + l;
+            }
+            pos++; //结尾0
+        }
+        if (pos + 10 > length) return FALSE;
+        unsigned short type = (((unsigned char)response[pos]) << 8) | (unsigned char)response[pos + 1]; pos += 2;
+        unsigned short klass = (((unsigned char)response[pos]) << 8) | (unsigned char)response[pos + 1]; pos += 2;
+        pos += 4; // TTL
+        unsigned short rdlen = (((unsigned char)response[pos]) << 8) | (unsigned char)response[pos + 1]; pos += 2;
+        if (pos + rdlen > length) return FALSE;
+        if (type == 1 && klass == 1 && rdlen == 4) {
+            // A记录
+            char ipbuf[32];
+            sprintf_s(ipbuf, "%u.%u.%u.%u", (unsigned char)response[pos], (unsigned char)response[pos + 1], (unsigned char)response[pos + 2], (unsigned char)response[pos + 3]);
+            outARecordIP = CA2T(ipbuf);
+            return TRUE; // 找到第一个A记录即可
+        }
+        pos += rdlen;
+    }
+    return FALSE;
 }
 
 // 执行单次DNS查询
@@ -171,9 +210,14 @@ int CDNSSpeedTester::DoSingleDNSQuery(SOCKET sock, sockaddr_in& dnsAddr,
         return -1;  // 超时或错误
     }
     
-    // 验证响应
-    if (!ParseDNSResponse(response, recvResult)) {
+    // ??????并尝试提取A记录IP
+    CString aIP;
+    if (!ParseDNSResponse(response, recvResult, aIP)) {
         return -1;
+    }
+    // 如果设置了污染IP过滤函数，则进行过滤
+    if (m_poisonFilter && m_poisonFilter(aIP)) {
+        return -1; //视为无效结果
     }
     
     // 计算延迟

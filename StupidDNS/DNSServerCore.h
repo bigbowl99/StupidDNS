@@ -72,10 +72,15 @@ private:
     // 构造DNS响应包
     int BuildDNSResponse(const char* queryPacket, int queryLen,
    const CString& ip, char* responseBuffer, int bufferSize);
-    
+
+    // 构造SERVFAIL响应
+    int BuildServFailResponse(const char* queryPacket, int queryLen,
+ char* responseBuffer, int bufferSize);
+ 
     // 转发DNS查询到上游服务器
-    CString ForwardQuery(const CString& dnsServer, const char* queryPacket, 
-   int queryLen, int& outLatency);
+    BOOL ForwardQuery(const CString& dnsServer, const char* queryPacket, 
+   int queryLen, char* outResponse, int outResponseSize, int& outResponseLen,
+ CString& outIP, int& outLatency);
     
     // IP字符串转为4字节
     BOOL IPStringToBytes(const CString& ip, unsigned char* bytes);

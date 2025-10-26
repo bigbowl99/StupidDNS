@@ -5,6 +5,7 @@
 
 #include <afxwin.h>
 #include <afxcmn.h>
+#include "DNSConfigCache.h"  // 添加配置缓存
 
 // CDNSSettingsDlg 对话框
 class CDNSSettingsDlg : public CDialogEx
@@ -32,13 +33,20 @@ public:
     // 消息处理函数
     virtual BOOL OnInitDialog();
   afx_msg void OnBnClickedTestAllDns();    // 全部测速按钮
-    afx_msg void OnBnClickedOk();         // 应用按钮
+    afx_msg void OnBnClickedOk();    // 应用按钮
 
 private:
     // 辅助函数
     void InitDNSList();        // 初始化DNS列表控件
-    void LoadDefaultDNS();             // 加载默认DNS服务器
+  void LoadDefaultDNS();             // 加载默认DNS服务器
     void TestDNSSpeed(int index);  // 测试DNS速度
     void UpdateDNSItem(int index, const CString& name, const CString& ip, const CString& latency, const CString& status);
     void ApplyFastestDNS();  // 应用最快的DNS服务器
+    
+    // 配置缓存相关
+    void LoadCachedConfig();  // 加载缓存配置
+    void SaveConfigCache();   // 保存配置缓存
+    
+    // 成员变量
+    CDNSConfigCache m_configCache;  // 配置缓存管理器
 };
