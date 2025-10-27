@@ -44,8 +44,10 @@ public:
 private:
     int m_nPort;             // 监听端口
     SOCKET m_socket;            // UDP Socket
+    SOCKET m_tcpListenSocket; // TCP监听 Socket
     BOOL m_bRunning;         // 运行状态
     HANDLE m_hThread;   // 工作线程句柄
+    HANDLE m_hTcpThread; // TCP线程句柄
  
     CDNSQueryRouter m_queryRouter;  // DNS查询路由器
     CDNSServerManager* m_pServerManager;
@@ -61,10 +63,12 @@ private:
     
     // 工作线程
     static DWORD WINAPI ServerThread(LPVOID lpParam);
+    static DWORD WINAPI ServerTcpThread(LPVOID lpParam);
     
     // 处理DNS查询
     void HandleDNSQuery(const char* queryPacket, int queryLen,
          const sockaddr_in& clientAddr);
+    void HandleDNSQueryTCP(const char* queryPacket, int queryLen, SOCKET clientSock);
   
     // 从DNS查询包中提取域名
     CString ExtractDomainFromQuery(const char* queryPacket, int queryLen);
@@ -80,6 +84,11 @@ private:
     // 转发DNS查询到上游服务器
     BOOL ForwardQuery(const CString& dnsServer, const char* queryPacket, 
    int queryLen, char* outResponse, int outResponseSize, int& outResponseLen,
+ CString& outIP, int& outLatency);
+
+    // 转发DNS查询并返回原始响应（TCP 上游）
+    BOOL ForwardQueryTCP(const CString& dnsServer, const char* queryPacket,
+ int queryLen, char* outResponse, int outResponseSize, int& outResponseLen,
  CString& outIP, int& outLatency);
     
     // IP字符串转为4字节

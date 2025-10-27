@@ -4,12 +4,13 @@
 #include "pch.h"
 #include "DNSServerCore.h"
 
-// 构造函数
 CDNSServerCore::CDNSServerCore()
     : m_nPort(53)
     , m_socket(INVALID_SOCKET)
+    , m_tcpListenSocket(INVALID_SOCKET)
     , m_bRunning(FALSE)
     , m_hThread(NULL)
+    , m_hTcpThread(NULL)
     , m_pServerManager(nullptr)
     , m_pClassifier(nullptr)
     , m_nTotalQueries(0)
@@ -252,7 +253,91 @@ int queryLen, char* outResponse, int outResponseSize, int& outResponseLen,
  return TRUE;
 }
 
-//处理DNS查询
+// 转发DNS查询到上游服务器（TCP），并透传原始响应
+BOOL CDNSServerCore::ForwardQueryTCP(const CString& dnsServer, const char* queryPacket,
+ int queryLen, char* outResponse, int outResponseSize, int& outResponseLen,
+ CString& outIP, int& outLatency)
+{
+ outLatency = -1;
+ outResponseLen =0;
+ outIP.Empty();
+ 
+ SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+ if (sock == INVALID_SOCKET) {
+ return FALSE;
+ }
+ 
+ // 设置超时
+ DWORD timeout =3000;
+ setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
+ setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout, sizeof(timeout));
+ 
+ // 设置DNS服务器地址
+ sockaddr_in dnsAddr;
+ memset(&dnsAddr,0, sizeof(dnsAddr));
+ dnsAddr.sin_family = AF_INET;
+ dnsAddr.sin_port = htons(53);
+ 
+ CStringA dnsServerA(dnsServer);
+ dnsAddr.sin_addr.s_addr = inet_addr(dnsServerA);
+ 
+ if (dnsAddr.sin_addr.s_addr == INADDR_NONE) {
+ closesocket(sock);
+ return FALSE;
+ }
+ 
+ //记录开始时间
+ DWORD startTime = GetTickCount();
+ 
+ // 建立TCP连接
+ if (connect(sock, (sockaddr*)&dnsAddr, sizeof(dnsAddr)) == SOCKET_ERROR) {
+ closesocket(sock);
+ return FALSE;
+ }
+ 
+ // TCP DNS 协议前面需要2字节长度
+ unsigned short netLen = htons((unsigned short)queryLen);
+ if (send(sock, (const char*)&netLen,2,0) !=2) {
+ closesocket(sock);
+ return FALSE;
+ }
+ if (send(sock, queryPacket, queryLen,0) != queryLen) {
+ closesocket(sock);
+ return FALSE;
+ }
+ 
+ //先收2字节长度
+ unsigned short respLen =0;
+ int r = recv(sock, (char*)&respLen,2, MSG_WAITALL);
+ if (r !=2) {
+ closesocket(sock);
+ return FALSE;
+ }
+ respLen = ntohs(respLen);
+ if (respLen > outResponseSize) {
+ closesocket(sock);
+ return FALSE;
+ }
+ int got =0;
+ while (got < respLen) {
+ int chunk = recv(sock, outResponse + got, respLen - got,0);
+ if (chunk <=0) {
+ closesocket(sock);
+ return FALSE;
+ }
+ got += chunk;
+ }
+ outLatency = GetTickCount() - startTime;
+ outResponseLen = respLen;
+ 
+ // 尝试从响应中提取一个 A记录的 IP仅用于日志
+ outIP = m_queryRouter.ExtractIPFromResponse(outResponse, outResponseLen);
+ 
+ closesocket(sock);
+ return TRUE;
+}
+
+// 处理DNS查询（UDP）
 void CDNSServerCore::HandleDNSQuery(const char* queryPacket, int queryLen,
  const sockaddr_in& clientAddr)
 {
@@ -274,7 +359,7 @@ void CDNSServerCore::HandleDNSQuery(const char* queryPacket, int queryLen,
  CString typeStr;
  
  // 用于透传上游完整响应
- char upstreamResp[512];
+ char upstreamResp[65536];
  int upstreamLen =0;
  BOOL gotUpstream = FALSE;
  
@@ -283,7 +368,7 @@ void CDNSServerCore::HandleDNSQuery(const char* queryPacket, int queryLen,
  BOOL ok = ForwardQuery(dns, queryPacket, queryLen,
  upstreamResp, sizeof(upstreamResp), upstreamLen,
  resultIP, latency);
- if (!ok) TRACE(_T("[Forward] 向上游 %s 转发失败\n"), dns);
+ if (!ok) TRACE(_T("[Forward-UDP] %s失败\n"), dns);
  return ok;
  };
 
@@ -306,7 +391,7 @@ void CDNSServerCore::HandleDNSQuery(const char* queryPacket, int queryLen,
  
  case FOREIGN:
  case ASSOCIATED:
- typeStr = _T("海外");
+ typeStr = _T("国外");
  m_nForeignQueries++;
  {
  auto overseasDNS = m_pServerManager->GetFastestOverseasDNS(1);
@@ -367,7 +452,124 @@ void CDNSServerCore::HandleDNSQuery(const char* queryPacket, int queryLen,
  }
 }
 
-//记录日志
+// 处理DNS查询（TCP）
+void CDNSServerCore::HandleDNSQueryTCP(const char* queryPacket, int queryLen, SOCKET clientSock)
+{
+ // 提取域名
+ CString domain = ExtractDomainFromQuery(queryPacket, queryLen);
+ 
+ if (domain.IsEmpty()) {
+ TRACE(_T("无效的DNS查询包\n"));
+ return;
+ }
+ 
+ TRACE(_T("[DNS请求-TCP] %s\n"), domain);
+ 
+ // 路由查询
+ int latency =0;
+ DomainType type = m_pClassifier->ClassifyDomain(domain);
+ 
+ CString resultIP;
+ CString typeStr;
+ 
+ // 用于透传上游完整响应
+ char upstreamResp[65536];
+ int upstreamLen =0;
+ BOOL gotUpstream = FALSE;
+ 
+ auto tryForwardTcp = [&](const CString& dns){
+ if (dns.IsEmpty()) return FALSE;
+ BOOL ok = ForwardQueryTCP(dns, queryPacket, queryLen,
+ upstreamResp, sizeof(upstreamResp), upstreamLen,
+ resultIP, latency);
+ if (!ok) TRACE(_T("[Forward-TCP] %s失败\n"), dns);
+ return ok;
+ };
+
+ switch (type) {
+ case DOMESTIC:
+ typeStr = _T("国内");
+ m_nDomesticQueries++;
+ {
+ DNSServerInfo domesticDNS = m_pServerManager->GetFastestDomesticDNS();
+ if (!domesticDNS.ip.IsEmpty()) {
+ gotUpstream = tryForwardTcp(domesticDNS.ip);
+ }
+ // 本地兜底
+ if (!gotUpstream) {
+ gotUpstream = tryForwardTcp(_T("114.114.114.114"));
+ if (!gotUpstream) gotUpstream = tryForwardTcp(_T("223.5.5.5"));
+ }
+ }
+ break;
+ 
+ case FOREIGN:
+ case ASSOCIATED:
+ typeStr = _T("国外");
+ m_nForeignQueries++;
+ {
+ auto overseasDNS = m_pServerManager->GetFastestOverseasDNS(1);
+ if (!overseasDNS.empty() && !overseasDNS[0].ip.IsEmpty()) {
+ gotUpstream = tryForwardTcp(overseasDNS[0].ip);
+ }
+ // 本地兜底
+ if (!gotUpstream) {
+ gotUpstream = tryForwardTcp(_T("1.1.1.1"));
+ if (!gotUpstream) gotUpstream = tryForwardTcp(_T("8.8.8.8"));
+ }
+ }
+ break;
+ 
+ case UNKNOWN:
+ typeStr = _T("未知");
+ {
+ DNSServerInfo domesticDNS = m_pServerManager->GetFastestDomesticDNS();
+ if (!domesticDNS.ip.IsEmpty()) {
+ gotUpstream = tryForwardTcp(domesticDNS.ip);
+ }
+ if (gotUpstream && !resultIP.IsEmpty() && !m_pClassifier->IsPoisonedIP(resultIP)) {
+ m_nDomesticQueries++;
+ } else {
+ auto overseasDNS = m_pServerManager->GetFastestOverseasDNS(1);
+ if (!overseasDNS.empty()) {
+ gotUpstream = tryForwardTcp(overseasDNS[0].ip);
+ }
+ //兜底：公共DNS
+ if (!gotUpstream) {
+ gotUpstream = tryForwardTcp(_T("1.1.1.1"));
+ if (!gotUpstream) gotUpstream = tryForwardTcp(_T("8.8.8.8"));
+ }
+ if (gotUpstream) m_nForeignQueries++;
+ }
+ }
+ break;
+ }
+ 
+ m_nTotalQueries++;
+ 
+ //记录日志
+ LogQuery(domain, typeStr, gotUpstream ? _T("成功") : _T("失败"), 
+ resultIP, latency);
+ 
+ //发送响应
+ if (gotUpstream) {
+ // 写2字节长度 + 报文
+ unsigned short netLen = htons((unsigned short)upstreamLen);
+ send(clientSock, (const char*)&netLen,2,0);
+ send(clientSock, upstreamResp, upstreamLen,0);
+ } else {
+ // 返回SERVFAIL
+ char servfail[512];
+ int len = BuildServFailResponse(queryPacket, queryLen, servfail, sizeof(servfail));
+ if (len >0) {
+ unsigned short netLen = htons((unsigned short)len);
+ send(clientSock, (const char*)&netLen,2,0);
+ send(clientSock, servfail, len,0);
+ }
+ }
+}
+
+// 日志记录
 void CDNSServerCore::LogQuery(const CString& domain, const CString& type,
 const CString& result, const CString& ip, int latency)
 {
@@ -376,7 +578,7 @@ const CString& result, const CString& ip, int latency)
  }
 }
 
-//服务器线程
+// UDP服务器线程
 DWORD WINAPI CDNSServerCore::ServerThread(LPVOID lpParam)
 {
  CDNSServerCore* pServer = (CDNSServerCore*)lpParam;
@@ -445,6 +647,58 @@ DWORD WINAPI CDNSServerCore::ServerThread(LPVOID lpParam)
  }
  
  TRACE(_T("[ServerThread] DNS服务器线程退出\n"));
+ return 0;
+}
+
+// TCP服务器线程
+DWORD WINAPI CDNSServerCore::ServerTcpThread(LPVOID lpParam)
+{
+ CDNSServerCore* pServer = (CDNSServerCore*)lpParam;
+ 
+ TRACE(_T("[ServerTcpThread] DNS服务器TCP线程启动\n"));
+ TRACE(_T("[ServerTcpThread] Socket: %d, Port: %d\n"), pServer->m_tcpListenSocket, pServer->m_nPort);
+ 
+ while (pServer->m_bRunning) {
+ sockaddr_in caddr;
+ int clen = sizeof(caddr);
+ 
+ SOCKET cs = accept(pServer->m_tcpListenSocket, (sockaddr*)&caddr, &clen);
+ if (cs == INVALID_SOCKET) {
+ int err = WSAGetLastError();
+ if (err == WSAEWOULDBLOCK) {
+ Sleep(5);
+ continue;
+ }
+ else {
+ break;
+ }
+ }
+ 
+ TRACE(_T("[ServerTcpThread] 新连接: %d\n"), cs);
+ 
+ // 每个连接处理一次或多次请求（简单处理：一次收一条）
+ for (;;) {
+ unsigned short qlen =0;
+ int r = recv(cs, (char*)&qlen,2, MSG_WAITALL);
+ if (r !=2) break;
+ qlen = ntohs(qlen);
+ if (qlen ==0 || qlen >65535) break;
+ std::vector<char> qbuf(qlen);
+ int got =0;
+ while (got < qlen) {
+ int chunk = recv(cs, qbuf.data() + got, qlen - got,0);
+ if (chunk <=0) { got = -1; break; }
+ got += chunk;
+ }
+ if (got != (int)qlen) break;
+ pServer->HandleDNSQueryTCP(qbuf.data(), qlen, cs);
+ }
+ 
+ closesocket(cs);
+ TRACE(_T("[ServerTcpThread] 关闭连接: %d\n"), cs);
+ }
+ 
+ TRACE(_T("[ServerTcpThread] DNS服务器TCP线程退出\n"));
  return 0;
 }
 
@@ -525,16 +779,69 @@ BOOL CDNSServerCore::Start()
  
  TRACE(_T("[Start] ? 成功绑定端口 %d\n"), m_nPort);
 
+ // 创建TCP监听Socket
+ m_tcpListenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+ if (m_tcpListenSocket == INVALID_SOCKET) {
+ TRACE(_T("[Start] ? 创建TCP监听Socket失败，错误: %d\n"), WSAGetLastError());
+ closesocket(m_socket);
+ m_socket = INVALID_SOCKET;
+ WSACleanup();
+ return FALSE;
+ }
+ 
+ if (setsockopt(m_tcpListenSocket, SOL_SOCKET, SO_REUSEADDR, (char*)&reuse, sizeof(reuse)) <0) {
+ TRACE(_T("[Start] 警告: 设置TCP SO_REUSEADDR失败\n"));
+ }
+ 
+ // 设置为非阻塞模式
+ if (ioctlsocket(m_tcpListenSocket, FIONBIO, &mode) !=0) {
+ TRACE(_T("[Start] ? 设置TCP非阻塞模式失败\n"));
+ }
+ 
+ //绑定TCP端口
+ sockaddr_in tcpAddr;
+ memset(&tcpAddr,0, sizeof(tcpAddr));
+ tcpAddr.sin_family = AF_INET;
+ tcpAddr.sin_addr.s_addr = INADDR_ANY; //监听所有接口
+ tcpAddr.sin_port = htons(m_nPort);
+ 
+ TRACE(_T("[Start] 尝试绑定TCP端口 %d (0.0.0.0:%d)...\n"), m_nPort, m_nPort);
+ 
+ if (bind(m_tcpListenSocket, (sockaddr*)&tcpAddr, sizeof(tcpAddr)) == SOCKET_ERROR) {
+ int error = WSAGetLastError();
+ TRACE(_T("[Start] ?绑定TCP端口 %d失败，错误码: %d\n"), m_nPort, error);
+ closesocket(m_tcpListenSocket);
+ closesocket(m_socket);
+ m_tcpListenSocket = INVALID_SOCKET;
+ m_socket = INVALID_SOCKET;
+ WSACleanup();
+ return FALSE;
+ }
+ 
+ // 开始监听
+ if (listen(m_tcpListenSocket, SOMAXCONN) == SOCKET_ERROR) {
+ TRACE(_T("[Start] ? TCP监听失败，错误码: %d\n"), WSAGetLastError());
+ closesocket(m_tcpListenSocket);
+ closesocket(m_socket);
+ m_tcpListenSocket = INVALID_SOCKET;
+ m_socket = INVALID_SOCKET;
+ WSACleanup();
+ return FALSE;
+ }
+ 
  // 启动工作线程
  m_bRunning = TRUE;
  TRACE(_T("[Start] 创建工作线程...\n"));
  m_hThread = CreateThread(NULL,0, ServerThread, this,0, NULL);
+ m_hTcpThread = CreateThread(NULL,0, ServerTcpThread, this,0, NULL);
  
- if (m_hThread == NULL) {
+ if (!m_hThread || !m_hTcpThread) {
  TRACE(_T("[Start] ? 创建线程失败\n"));
  m_bRunning = FALSE;
-closesocket(m_socket);
+ closesocket(m_socket);
+ closesocket(m_tcpListenSocket);
  m_socket = INVALID_SOCKET;
+ m_tcpListenSocket = INVALID_SOCKET;
  WSACleanup();
  return FALSE;
  }
@@ -566,10 +873,21 @@ void CDNSServerCore::Stop()
  m_hThread = NULL;
  }
  
+ if (m_hTcpThread != NULL) {
+ WaitForSingleObject(m_hTcpThread,5000);
+ CloseHandle(m_hTcpThread);
+ m_hTcpThread = NULL;
+ }
+ 
  //关闭Socket
  if (m_socket != INVALID_SOCKET) {
  closesocket(m_socket);
  m_socket = INVALID_SOCKET;
+ }
+ 
+ if (m_tcpListenSocket != INVALID_SOCKET) {
+ closesocket(m_tcpListenSocket);
+ m_tcpListenSocket = INVALID_SOCKET;
  }
  
  WSACleanup();
