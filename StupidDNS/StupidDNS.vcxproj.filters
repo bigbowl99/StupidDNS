@@ -170,6 +170,7 @@
     <None Include="rules\gfw.txt">
       <Filter>rules</Filter>
     </None>
+    <None Include="Readme.md" />
   </ItemGroup>
   <ItemGroup>
     <Image Include="res\StupidDNS.ico">

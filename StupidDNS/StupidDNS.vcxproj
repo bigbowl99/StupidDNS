@@ -250,6 +250,10 @@
       <SubType>
       </SubType>
     </None>
+    <None Include="Readme.md">
+      <SubType>
+      </SubType>
+    </None>
     <None Include="REQUIREMENTS.md" />
     <None Include="res\StupidDNS.rc2" />
     <None Include="rules\accelerated-domains.china.conf">
