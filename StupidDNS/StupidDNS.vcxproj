@@ -192,6 +192,7 @@
     <ClInclude Include="DNSDualQuery.h" />
     <ClInclude Include="DNSFetcher.h" />
     <ClInclude Include="DNSQueryRouter.h" />
+    <ClInclude Include="DNSResponseCache.h" />
     <ClInclude Include="DNSServer.h" />
     <ClInclude Include="DNSServerCore.h" />
     <ClInclude Include="DNSServerManager.h" />
@@ -217,6 +218,7 @@
     <ClCompile Include="DNSDualQuery.cpp" />
     <ClCompile Include="DNSFetcher.cpp" />
     <ClCompile Include="DNSQueryRouter.cpp" />
+    <ClCompile Include="DNSResponseCache.cpp" />
     <ClCompile Include="DNSServerCore.cpp" />
     <ClCompile Include="DNSServerManager.cpp" />
     <ClCompile Include="DNSSettingsDlg.cpp" />
